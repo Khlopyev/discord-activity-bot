@@ -2,7 +2,9 @@
 # на `\r` и выдаёт «bad interpreter».
 * text=auto eol=lf
 
-# PowerShell оставляем в родных для Windows окончаниях.
+# PowerShell оставляем в родных для Windows окончаниях. Сами файлы должны
+# лежать в UTF-8 с BOM — иначе Windows PowerShell 5.1 читает их как cp1251
+# и разваливает кириллицу в строках.
 *.ps1 text eol=crlf
 
 *.png binary
