@@ -20,7 +20,22 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
     steps:
+      - name: Проверить, настроен ли сервер
+        id: check
+        env:
+          HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          # Пока секреты не заданы, выкат пропускается: иначе каждый push
+          # помечался бы красным из-за ненастроенного развёртывания.
+          if [ -z "$HOST" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Секреты SSH не заданы — выкат пропущен."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Подготовить SSH
+        if: steps.check.outputs.ready == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
@@ -31,6 +46,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Выкатить
+        if: steps.check.outputs.ready == 'true'
         env:
           HOST: ${{ secrets.SSH_HOST }}
           USER: ${{ secrets.SSH_USER }}
