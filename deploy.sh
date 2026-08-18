@@ -24,7 +24,7 @@ docker image prune -f >/dev/null
 
 echo "==> Жду, пока бот войдёт в Discord"
 # Контейнер может подниматься несколько секунд; ищем строку входа в логах.
-for _ in $(seq 1 30); do
+for _ in $(seq 1 60); do
     if docker compose logs --tail 200 2>/dev/null | grep -q "Вошли как"; then
         echo "==> Готово"
         docker compose logs --tail 15
@@ -33,6 +33,6 @@ for _ in $(seq 1 30); do
     sleep 2
 done
 
-echo "ПРЕДУПРЕЖДЕНИЕ: за минуту бот так и не вошёл. Последние логи:" >&2
+echo "ОШИБКА: за две минуты бот так и не вошёл в Discord. Последние логи:" >&2
 docker compose logs --tail 40 >&2
 exit 1

@@ -62,5 +62,9 @@ if ($WithDatabase) {
 
 Write-Host "==> Пересобираю на сервере" -ForegroundColor Cyan
 ssh $Server "cd $Path && chmod +x deploy.sh && ./deploy.sh"
+# Без этой проверки неудачный выкат отчитывался бы зелёным "Развёрнуто".
+if ($LASTEXITCODE -ne 0) {
+    throw "Развёртывание не удалось (код $LASTEXITCODE). Логи выше."
+}
 
 Write-Host "==> Развёрнуто" -ForegroundColor Green
