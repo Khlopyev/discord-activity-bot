@@ -1,0 +1,40 @@
+name: Развёртывание
+
+# Деплой только после зелёных тестов и только с main.
+on:
+  workflow_run:
+    workflows: ["Тесты"]
+    types: [completed]
+    branches: [main]
+  # Ручной запуск на случай, если нужно перевыкатить без нового коммита.
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Подготовить SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Отпечаток берём из секрета, а не из ssh-keyscan: иначе первый же
+          # запуск доверился бы любому хосту, который ответит по этому адресу.
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Выкатить
+        env:
+          HOST: ${{ secrets.SSH_HOST }}
+          USER: ${{ secrets.SSH_USER }}
+          DIR: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "$USER@$HOST" \
+            "cd ${DIR:-~/discord-acb} && ./deploy.sh"

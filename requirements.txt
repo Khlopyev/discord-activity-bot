@@ -1,0 +1,7 @@
+discord.py>=2.4,<3
+aiosqlite>=0.20
+python-dotenv>=1.0
+# База тайм-зон для zoneinfo: в Windows системной tzdata нет.
+tzdata>=2024.1
+# Рендер карточки профиля (раздел 3.5 брифа).
+Pillow>=10.2

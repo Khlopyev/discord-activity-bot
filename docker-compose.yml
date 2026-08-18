@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/activity.db
+    volumes:
+      # Каталог рядом с проектом, а не именованный том: так базу можно
+      # положить при переезде и забрать для бэкапа обычным cp.
+      - ./data:/data
+    # SIGTERM даёт боту закрыть открытые голосовые сессии перед остановкой.
+    stop_grace_period: 30s

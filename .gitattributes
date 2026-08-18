@@ -1,0 +1,9 @@
+# На Linux скрипты и конфиги должны быть с LF: иначе bash спотыкается
+# на `\r` и выдаёт «bad interpreter».
+* text=auto eol=lf
+
+# PowerShell оставляем в родных для Windows окончаниях.
+*.ps1 text eol=crlf
+
+*.png binary
+*.db binary
