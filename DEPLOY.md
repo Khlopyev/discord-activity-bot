@@ -267,11 +267,16 @@ PS> .\scripts\deploy-local.ps1 -Server bot@ВАШ_IP -WithDatabase
 Код уезжает на сервер сам, как только вы отправили коммит в `main` и тесты
 прошли. Настраивается один раз.
 
-**1. Репозиторий.** Приватный — в проекте лежит история сервера:
+**1. Репозиторий.** Публичный — в нём только код:
 
 ```
-PS> gh repo create discord-acb --private --source=. --push
+PS> gh repo create discord-activity-bot --public --source=. --push
 ```
+
+История сервера в репозиторий не попадает: она лежит в `data/activity.db` на
+самом сервере, а этот каталог вместе с `.env` перечислен в `.gitignore`.
+Приватный репозиторий тоже подойдёт — тогда вместо `--public` укажите
+`--private`, остальные шаги те же.
 
 **2. Ключ для доступа сервера к репозиторию.** На сервере:
 
@@ -287,7 +292,7 @@ Add deploy key. Права на запись не нужны.
 `.env` и `data/` в новый каталог):
 
 ```
-git clone git@github.com:ВАШ_ЛОГИН/discord-acb.git ~/discord-acb
+git clone git@github.com:ВАШ_ЛОГИН/discord-activity-bot.git ~/discord-acb
 ```
 
 **3. Ключ для доступа GitHub Actions к серверу.** На вашей машине:
