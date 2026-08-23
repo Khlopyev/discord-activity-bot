@@ -18,12 +18,23 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    strategy:
+      # Одна упавшая версия не должна отменять прогон остальных: иначе
+      # неясно, сломано везде или только на ней.
+      fail-fast: false
+      matrix:
+        # 3.12 — то, на чём бот реально работает (python:3.12-slim в
+        # Dockerfile). 3.14 — то, что стоит на машине разработчика. 3.13
+        # между ними: начиная с неё audioop выехал из стандартной
+        # библиотеки, и discord.py тянет его отдельным audioop-lts.
+        python-version: ["3.12", "3.13", "3.14"]
+    name: Тесты (Python ${{ matrix.python-version }})
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Установить зависимости
