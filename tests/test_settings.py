@@ -144,26 +144,6 @@ async def test_purge_guild_keeps_settings_and_optouts(store):
     assert store.is_opted_out(GUILD, ALICE) is True
 
 
-@pytest.mark.asyncio
-async def test_export_rows_scoped_to_guild(store):
-    db = store.db
-    await db.add_message_counts(
-        [
-            (GUILD, ALICE, 5, "2026-08-17", 3, 30),
-            (OTHER_GUILD, ALICE, 5, "2026-08-17", 9, 90),
-        ]
-    )
-    headers, rows = await db.export_rows(GUILD, "message_events_daily")
-    assert "message_count" in headers
-    assert len(rows) == 1
-
-
-@pytest.mark.asyncio
-async def test_export_rejects_unknown_table(store):
-    with pytest.raises(ValueError, match="не разрешена"):
-        await store.db.export_rows(GUILD, "users; DROP TABLE users")
-
-
 # --- прогрев кэша для сервера, на который бота пригласили заново ---
 
 

@@ -308,16 +308,31 @@ class Database:
             await self.conn.commit()
         return removed
 
-    async def export_rows(self, guild_id: int, table: str) -> tuple[list[str], list[tuple]]:
-        """Выгрузка одной таблицы по гильдии: заголовки и строки."""
+    async def stream_export_rows(
+        self, guild_id: int, table: str, *, chunk_size: int = 20_000
+    ):
+        """Та же выгрузка, но кусками: (заголовки, порция строк).
+
+        Читать таблицу целиком нельзя — на сервере с двухлетней историей это
+        сотни мегабайт в памяти процесса. Для пустой таблицы отдаётся один
+        кусок с заголовками и без строк, чтобы вызывающему не нужно было
+        отдельно спрашивать структуру.
+        """
         if table not in EXPORTABLE_TABLES:
             raise ValueError(f"Таблица {table!r} не разрешена к выгрузке")
         async with self.conn.execute(
             f"SELECT * FROM {table} WHERE guild_id = ?", (guild_id,)
         ) as cursor:
-            rows = await cursor.fetchall()
             headers = [column[0] for column in cursor.description]
-        return headers, [tuple(row) for row in rows]
+            empty = True
+            while True:
+                rows = await cursor.fetchmany(chunk_size)
+                if not rows:
+                    if empty:
+                        yield headers, []
+                    return
+                empty = False
+                yield headers, [tuple(row) for row in rows]
 
     async def upsert_users(self, users: Iterable[tuple[int, str | None, bool]]) -> None:
         rows = [(uid, name, int(is_bot), to_iso(utcnow())) for uid, name, is_bot in users]

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -25,6 +26,105 @@ log = logging.getLogger(__name__)
 
 # Discord отклоняет вложения больше лимита сервера; берём консервативный порог.
 MAX_UPLOAD_BYTES = 7 * 1024 * 1024
+
+
+class ExportTooLarge(Exception):
+    """Выгрузка переросла лимит вложений — дальше собирать нечего.
+
+    Бросается во время сборки, а не после: раньше файл собирался целиком, и
+    только потом проверялся размер, так что на большой истории впустую
+    тратились и десятки секунд, и сотни мегабайт памяти.
+    """
+
+    def __init__(self, rows: int) -> None:
+        super().__init__(f"выгрузка превысила лимит после {rows} строк")
+        self.rows = rows
+
+
+class _ZipExport:
+    """Пишет CSV прямо в архив, не собирая таблицы в памяти.
+
+    Методы синхронные и вызываются через asyncio.to_thread: сжатие — это
+    секунды процессорного времени, и в цикле событий им делать нечего, иначе
+    бот на это время перестаёт отвечать Discord и рискует потерять соединение.
+    """
+
+    filename_suffix = "zip"
+
+    def __init__(self) -> None:
+        self._buffer = io.BytesIO()
+        self._archive = zipfile.ZipFile(self._buffer, "w", zipfile.ZIP_DEFLATED)
+        self._entry: object | None = None
+        self._table: str | None = None
+
+    def add(self, table: str, headers: list[str], rows: list[tuple]) -> int:
+        """Дописать порцию строк. Возвращает текущий размер выгрузки."""
+        if table != self._table:
+            self._close_entry()
+            self._table = table
+            self._entry = self._archive.open(f"{table}.csv", "w")
+            # BOM, иначе Excel открывает кириллицу как мусор.
+            self._write("﻿")
+            self._write(_to_csv([headers]))
+        if rows:
+            self._write(_to_csv(rows))
+        return self._buffer.tell()
+
+    def finish(self) -> bytes:
+        self._close_entry()
+        self._archive.close()
+        return self._buffer.getvalue()
+
+    def _close_entry(self) -> None:
+        if self._entry is not None:
+            self._entry.close()
+            self._entry = None
+
+    def _write(self, text: str) -> None:
+        self._entry.write(text.encode("utf-8"))
+
+
+class _JsonExport:
+    """Тот же поток, но в JSON: по записи на строку.
+
+    Раньше структура собиралась целиком и сериализовалась с indent=2. Отступы
+    на миллионе записей — это лишние мегабайты, а собрать словарь целиком
+    можно только удержав в памяти всю выгрузку.
+    """
+
+    filename_suffix = "json"
+
+    def __init__(self) -> None:
+        self._buffer = io.BytesIO()
+        self._table: str | None = None
+        self._first_row = True
+        self._buffer.write(b"{")
+
+    def add(self, table: str, headers: list[str], rows: list[tuple]) -> int:
+        if table != self._table:
+            if self._table is not None:
+                self._buffer.write(b"\n  ],")
+            self._table = table
+            self._first_row = True
+            self._buffer.write(f'\n  "{table}": ['.encode("utf-8"))
+        for row in rows:
+            record = json.dumps(dict(zip(headers, row)), ensure_ascii=False)
+            separator = "\n    " if self._first_row else ",\n    "
+            self._buffer.write((separator + record).encode("utf-8"))
+            self._first_row = False
+        return self._buffer.tell()
+
+    def finish(self) -> bytes:
+        if self._table is not None:
+            self._buffer.write(b"\n  ]")
+        self._buffer.write(b"\n}\n")
+        return self._buffer.getvalue()
+
+
+def _to_csv(rows) -> str:
+    text = io.StringIO()
+    csv.writer(text, lineterminator="\n").writerows(rows)
+    return text.getvalue()
 
 
 class Admin(commands.Cog):
@@ -223,45 +323,41 @@ class Admin(commands.Cog):
         chosen = fmt.value if fmt else "csv"
         guild = interaction.guild
 
-        tables = {}
-        for table in EXPORTABLE_TABLES:
-            headers, rows = await self.db.export_rows(guild.id, table)
-            tables[table] = (headers, rows)
-
-        if chosen == "json":
-            payload = {
-                table: [dict(zip(headers, row)) for row in rows]
-                for table, (headers, rows) in tables.items()
-            }
-            blob = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-            filename = f"activity-{guild.id}.json"
-        else:
-            buffer = io.BytesIO()
-            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-                for table, (headers, rows) in tables.items():
-                    text = io.StringIO()
-                    writer = csv.writer(text, lineterminator="\n")
-                    writer.writerow(headers)
-                    writer.writerows(rows)
-                    # BOM, иначе Excel открывает кириллицу как мусор.
-                    archive.writestr(f"{table}.csv", "﻿" + text.getvalue())
-            blob = buffer.getvalue()
-            filename = f"activity-{guild.id}.zip"
-
-        if len(blob) > MAX_UPLOAD_BYTES:
+        try:
+            blob, total = await self._collect_export(guild.id, chosen)
+        except ExportTooLarge as overflow:
             await interaction.followup.send(
-                f"Выгрузка получилась {len(blob) // 1024 // 1024} МБ — это больше лимита "
-                "вложений Discord. Заберите файл базы `data/activity.db` с сервера напрямую.",
+                f"Выгрузка переросла лимит вложений Discord (остановился на "
+                f"{overflow.rows} строках). Заберите файл базы `data/activity.db` "
+                "с сервера напрямую.",
                 ephemeral=True,
             )
             return
 
-        total = sum(len(rows) for _headers, rows in tables.values())
+        writer = _JsonExport if chosen == "json" else _ZipExport
+        filename = f"activity-{guild.id}.{writer.filename_suffix}"
         await interaction.followup.send(
             f"Выгружено строк: {total}.",
             file=discord.File(io.BytesIO(blob), filename=filename),
             ephemeral=True,
         )
+
+    async def _collect_export(self, guild_id: int, fmt: str) -> tuple[bytes, int]:
+        """Собрать выгрузку, читая таблицы кусками и сжимая их в отдельном потоке.
+
+        Целиком в память не читается ничего: и выборка, и сжатие идут порциями,
+        а как только собранное перерастает лимит вложений — сборка бросается,
+        не дожидаясь конца.
+        """
+        export = _JsonExport() if fmt == "json" else _ZipExport()
+        total = 0
+        for table in EXPORTABLE_TABLES:
+            async for headers, rows in self.db.stream_export_rows(guild_id, table):
+                size = await asyncio.to_thread(export.add, table, headers, rows)
+                total += len(rows)
+                if size > MAX_UPLOAD_BYTES:
+                    raise ExportTooLarge(total)
+        return await asyncio.to_thread(export.finish), total
 
     @admin.command(name="summary-channel", description="Канал для автоматических сводок")
     @app_commands.describe(
