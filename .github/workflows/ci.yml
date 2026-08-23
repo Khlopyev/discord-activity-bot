@@ -5,6 +5,16 @@ on:
     branches: [main]
   pull_request:
 
+# Тестам нужен только код: токену с правом записи здесь делать нечего.
+permissions:
+  contents: read
+
+# Новый push в ветку отменяет прогон предыдущего коммита — кроме main,
+# откуда по зелёным тестам запускается выкат.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   tests:
     runs-on: ubuntu-latest

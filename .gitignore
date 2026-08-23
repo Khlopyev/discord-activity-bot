@@ -8,5 +8,8 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+# Локальный basetemp: на Windows pytest не может обновить симлинк
+# pytest-current в системном временном каталоге и падает с WinError 5.
+.pytest_tmp/
 .idea/
 .vscode/
