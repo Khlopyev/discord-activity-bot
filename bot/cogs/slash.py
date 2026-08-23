@@ -95,10 +95,15 @@ class SlashCommands(commands.Cog):
         period: app_commands.Choice[str] | None = None,
         limit: app_commands.Range[int, 1, MAX_LIMIT] = 10,
     ) -> None:
+        # Топ игр читает всю таблицу игровых событий гильдии. Даже с
+        # индексами на двухлетней истории это сотни миллисекунд, а на сервере
+        # медленнее, чем на машине разработчика: в три секунды Discord лучше
+        # не упираться.
+        await interaction.response.defer()
         embed = await self.stats.games_embed(
             interaction.guild, period.value if period else "all", limit
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="profile", description="Карточка активности участника")
     @app_commands.describe(user="Чью карточку показать")
@@ -121,10 +126,13 @@ class SlashCommands(commands.Cog):
         interaction: discord.Interaction,
         period: app_commands.Choice[str] | None = None,
     ) -> None:
+        # Самая тяжёлая команда: сводка складывается из полудюжины запросов,
+        # каждый из которых читает гильдию целиком.
+        await interaction.response.defer()
         embed = await self.stats.server_embed(
             interaction.guild, period.value if period else "all"
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
