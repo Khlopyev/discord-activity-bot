@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import signal
 import sys
 
 import discord
@@ -23,6 +25,30 @@ from .cogs.voice import VoiceTracker
 log = logging.getLogger("bot")
 
 TRACKER_COGS = ("VoiceTracker", "TextTracker", "PresenceTracker")
+
+# Сигналы, по которым бот должен останавливаться штатно. SIGTERM здесь
+# главный: именно его шлёт `docker compose stop` и любой перезапуск контейнера.
+STOP_SIGNALS = ("SIGTERM", "SIGINT")
+
+
+def install_stop_handlers(loop: asyncio.AbstractEventLoop, on_stop) -> list[str]:
+    """Повесить `on_stop` на сигналы остановки. Возвращает те, что удалось.
+
+    add_signal_handler есть только в unix-реализации цикла: на Windows он
+    поднимает NotImplementedError, и это нормально — SIGTERM туда не приходит,
+    а Ctrl+C прилетает как KeyboardInterrupt.
+    """
+    installed: list[str] = []
+    for name in STOP_SIGNALS:
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            loop.add_signal_handler(sig, on_stop)
+        except NotImplementedError:
+            continue
+        installed.append(name)
+    return installed
 
 
 class ActivityBot(commands.Bot):
@@ -50,6 +76,7 @@ class ActivityBot(commands.Bot):
         self.settings = SettingsStore(self.db)
         self.stats = StatsService(self.db, config)
         self._synced_guilds: set[int] = set()
+        self._stopping = False
 
     async def setup_hook(self) -> None:
         await self.db.connect()
@@ -117,17 +144,30 @@ class ActivityBot(commands.Bot):
         await ctx.reply("Что-то пошло не так, подробности в логах.", mention_author=False)
 
     async def close(self) -> None:
-        # Досбрасываем буферы и закрываем открытые голосовые сессии до разрыва
-        # соединения, иначе последний интервал активности потеряется.
-        for name in TRACKER_COGS:
-            cog = self.get_cog(name)
-            if cog is not None:
-                try:
-                    await cog.shutdown()
-                except Exception:
-                    log.exception("Ошибка при завершении кога %s", name)
+        # Флаг, а не is_closed(): второй сигнал может прийти, пока коги ещё
+        # останавливаются, и тогда шатдаун прогнался бы дважды.
+        if not self._stopping:
+            self._stopping = True
+            await shutdown_trackers(self)
         await super().close()
         await self.db.close()
+
+
+async def shutdown_trackers(bot: commands.Bot) -> None:
+    """Досбросить буферы и закрыть открытые сессии до разрыва соединения.
+
+    Иначе последний интервал активности теряется. Падение одного кога не
+    должно мешать остальным: недобитый трекер — это потеря данных, а нам
+    важно дать закрыться каждому.
+    """
+    for name in TRACKER_COGS:
+        cog = bot.get_cog(name)
+        if cog is None:
+            continue
+        try:
+            await cog.shutdown()
+        except Exception:
+            log.exception("Ошибка при завершении кога %s", name)
 
 
 def run() -> None:
@@ -145,7 +185,9 @@ def run() -> None:
 
     bot = ActivityBot(config)
     try:
-        bot.run(config.token, log_handler=None)
+        asyncio.run(_serve(bot, config.token))
+    except KeyboardInterrupt:
+        pass
     except discord.PrivilegedIntentsRequired:
         needed = ["Message Content Intent"]
         if config.enable_presence_tracking:
@@ -161,3 +203,21 @@ def run() -> None:
     except discord.LoginFailure:
         print("Неверный DISCORD_TOKEN.", file=sys.stderr)
         raise SystemExit(1)
+
+
+async def _serve(bot: ActivityBot, token: str) -> None:
+    """Запуск с перехватом сигналов остановки.
+
+    Client.run() ловит только KeyboardInterrupt, то есть SIGINT. SIGTERM он не
+    перехватывает вовсе, а в контейнере python — это PID 1, для которого ядро
+    не применяет действие по умолчанию: необработанный SIGTERM просто
+    игнорируется. Из-за этого `docker compose stop` висел все 30 секунд
+    stop_grace_period и добивал процесс SIGKILL — открытые голосовые сессии
+    не закрывались, а несброшенные счётчики сообщений терялись.
+    """
+    loop = asyncio.get_running_loop()
+    async with bot:
+        installed = install_stop_handlers(loop, lambda: loop.create_task(bot.close()))
+        if installed:
+            log.info("Штатная остановка по: %s", ", ".join(installed))
+        await bot.start(token)
