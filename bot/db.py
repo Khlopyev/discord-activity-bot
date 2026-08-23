@@ -27,6 +27,17 @@ METRIC_ORDER = {
     "combined": "combined_score",
 }
 
+# Индексы, ради которых собирается статистика планировщика: пока её нет,
+# он предпочитает их точному поиску по ключу там, где точный поиск возможен.
+# Рядом — таблица индекса: по пустой таблице ANALYZE ничего не запишет, и
+# требовать с неё статистику бессмысленно.
+ANALYZED_INDEXES = {
+    "idx_voice_events_guild_channel": "voice_events_daily",
+    "idx_message_events_guild_channel": "message_events_daily",
+    "idx_game_events_guild_name": "game_events_daily",
+    "idx_summary_guild_user": "daily_activity_summary",
+}
+
 # Белый список таблиц для /admin export — имя подставляется в SQL напрямую.
 EXPORTABLE_TABLES = (
     "daily_activity_summary",
@@ -117,10 +128,63 @@ class Database:
         await self._conn.execute("PRAGMA busy_timeout=5000")
         await self._conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
         await self._conn.commit()
+        await self.ensure_statistics()
         log.info("БД готова: %s", self._path.resolve())
+
+    async def ensure_statistics(self) -> bool:
+        """Собрать статистику планировщика, если её ещё нет. True — если собрали.
+
+        Без sqlite_stat1 планировщик выбирает индекс по форме запроса и на
+        покрывающих индексах ошибается: для запроса, отфильтрованного по
+        участнику, он берёт широкий индекс вместо точного поиска по ключу и
+        замедляется на два порядка. ANALYZE эту ошибку снимает.
+
+        Проверяем не наличие строк вообще, а строки по нужным индексам: ANALYZE
+        на пустой базе записывает несколько строк для частичных индексов
+        voice_sessions, и по ним всё выглядело бы уже собранным. Пока
+        агрегатные таблицы пусты, собирать нечего — попробуем на следующем
+        запуске; как только данные появятся, статистика соберётся и осядет.
+
+        Дальше её освежает PRAGMA optimize при закрытии.
+        """
+        analysed = await self._analysed_indexes()
+        missing = [
+            table for index, table in ANALYZED_INDEXES.items() if index not in analysed
+        ]
+        if not any([await self._has_rows(table) for table in missing]):
+            return False
+
+        log.info("Собираю статистику планировщика (разово, может занять секунды)")
+        await self.conn.execute("ANALYZE")
+        await self.conn.commit()
+        return True
+
+    async def _analysed_indexes(self) -> set[str]:
+        async with self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'"
+        ) as cursor:
+            if await cursor.fetchone() is None:
+                return set()
+        async with self.conn.execute("SELECT DISTINCT idx FROM sqlite_stat1") as cursor:
+            return {row["idx"] for row in await cursor.fetchall() if row["idx"]}
+
+    async def _has_rows(self, table: str) -> bool:
+        # Имя таблицы — из константы модуля, не из пользовательского ввода.
+        async with self.conn.execute(f"SELECT EXISTS(SELECT 1 FROM {table}) AS any_row") as c:
+            return bool((await c.fetchone())["any_row"])
 
     async def close(self) -> None:
         if self._conn is not None:
+            try:
+                # Рекомендованный SQLite способ держать статистику свежей:
+                # пересчитывает только то, что заметно изменилось. Лимит
+                # ограничивает работу, чтобы остановка не затягивалась.
+                await self._conn.execute("PRAGMA analysis_limit=400")
+                await self._conn.execute("PRAGMA optimize")
+                await self._conn.commit()
+            except Exception:
+                # Остановка бота не должна падать из-за обслуживания базы.
+                log.exception("Не удалось обновить статистику планировщика")
             await self._conn.close()
             self._conn = None
 

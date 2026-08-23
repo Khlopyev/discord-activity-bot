@@ -85,6 +85,14 @@ CREATE TABLE IF NOT EXISTS game_events_daily (
 CREATE INDEX IF NOT EXISTS idx_game_events_guild_date
     ON game_events_daily (guild_id, date);
 
+-- Покрывающий индекс для «топ игр за всё время»: там нет фильтра по дате, и
+-- индекс выше только мешал — он отсортирован по дате, поэтому каждая строка
+-- превращалась в случайный доступ к таблице. Порядок колонок повторяет запрос:
+-- guild_id фильтруем, по activity_name группируем, остальное читаем не
+-- заглядывая в таблицу.
+CREATE INDEX IF NOT EXISTS idx_game_events_guild_name
+    ON game_events_daily (guild_id, activity_name, date, user_id, seconds);
+
 -- Поканальный агрегат голосовой активности. В разделе 5 брифа такой разбивки
 -- нет (есть только message_events_daily), но она нужна для «самого популярного
 -- голосового канала» из раздела 3.4: сырые voice_sessions чистятся по ретеншну.
@@ -100,6 +108,10 @@ CREATE TABLE IF NOT EXISTS voice_events_daily (
 
 CREATE INDEX IF NOT EXISTS idx_voice_events_guild_date
     ON voice_events_daily (guild_id, date);
+
+-- То же для «популярных голосовых каналов».
+CREATE INDEX IF NOT EXISTS idx_voice_events_guild_channel
+    ON voice_events_daily (guild_id, channel_id, date, user_id, voice_seconds, stream_seconds);
 
 -- Тепловая карта активности (раздел 3.2): 168 строк на сервер, растёт только
 -- вширь по числу серверов. Даёт «самый активный час» из раздела 3.4.
@@ -139,6 +151,11 @@ CREATE TABLE IF NOT EXISTS message_events_daily (
     PRIMARY KEY (guild_id, user_id, channel_id, date)
 );
 
+-- Покрывающий индекс для «популярных текстовых каналов»: без него запрос
+-- шёл по первичному ключу, где строки разложены по участникам, а не по каналам.
+CREATE INDEX IF NOT EXISTS idx_message_events_guild_channel
+    ON message_events_daily (guild_id, channel_id, date, user_id, message_count);
+
 -- Предрасчитанный агрегат для лидербордов.
 CREATE TABLE IF NOT EXISTS daily_activity_summary (
     guild_id       INTEGER NOT NULL,
@@ -152,3 +169,8 @@ CREATE TABLE IF NOT EXISTS daily_activity_summary (
 
 CREATE INDEX IF NOT EXISTS idx_summary_guild_date
     ON daily_activity_summary (guild_id, date);
+
+-- Сводка по серверу и «самый активный день недели» читают всю гильдию целиком.
+CREATE INDEX IF NOT EXISTS idx_summary_guild_user
+    ON daily_activity_summary (guild_id, user_id, date,
+                               voice_seconds, message_count, stream_seconds);
