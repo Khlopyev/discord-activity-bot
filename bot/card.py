@@ -89,17 +89,33 @@ class CardData:
 
 
 class _Fonts:
-    """Ленивый резолвер шрифтов: системные пути или переопределение из окружения."""
+    """Ленивый резолвер шрифтов: системные пути или переопределение из окружения.
+
+    Резолв отложен до первого обращения, а не сделан в __init__. Экземпляр
+    создаётся при импорте модуля, то есть до того, как Config.from_env()
+    вызовет load_dotenv(): переменные FONT_*_PATH, заданные в .env, на момент
+    импорта ещё не существуют, и переопределение молча не срабатывало.
+    """
 
     def __init__(self) -> None:
+        self._resolved = False
+        self._regular: str | None = None
+        self._bold: str | None = None
+        self._cache: dict[tuple[bool, int], ImageFont.ImageFont] = {}
+
+    def _ensure_resolved(self) -> None:
+        if self._resolved:
+            return
         self._regular = self._resolve("FONT_REGULAR_PATH", FONT_CANDIDATES_REGULAR)
         self._bold = self._resolve("FONT_BOLD_PATH", FONT_CANDIDATES_BOLD) or self._regular
+        self._resolved = True
         if self._regular is None:
+            # Раньше это писалось на импорте — до logging.basicConfig() в run(),
+            # то есть мимо настроенного формата и уровня.
             log.warning(
                 "Не найден ни один TTF-шрифт — карточка будет отрисована встроенным "
                 "растровым шрифтом и выглядеть плохо. Задайте FONT_REGULAR_PATH."
             )
-        self._cache: dict[tuple[bool, int], ImageFont.ImageFont] = {}
 
     @staticmethod
     def _resolve(env_var: str, candidates: tuple[str, ...]) -> str | None:
@@ -116,6 +132,7 @@ class _Fonts:
         cached = self._cache.get(key)
         if cached is not None:
             return cached
+        self._ensure_resolved()
         path = self._bold if bold else self._regular
         font = ImageFont.truetype(path, size) if path else ImageFont.load_default()
         self._cache[key] = font
