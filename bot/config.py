@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -29,14 +30,21 @@ def _int(name: str, default: int, *, minimum: int | None = None) -> int:
     return value
 
 
-def _float(name: str, default: float) -> float:
+def _float(name: str, default: float, *, minimum: float | None = None) -> float:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
     try:
-        return float(raw.strip())
+        value = float(raw.strip())
     except ValueError as exc:
         raise RuntimeError(f"{name} должен быть числом, получено: {raw!r}") from exc
+    # float() молча принимает "nan" и "inf". В формуле комбинированного счёта
+    # такое значение не падает, а тихо ломает сортировку лидерборда.
+    if not math.isfinite(value):
+        raise RuntimeError(f"{name} должен быть конечным числом, получено: {raw!r}")
+    if minimum is not None and value < minimum:
+        raise RuntimeError(f"{name} должен быть >= {minimum:g}, получено: {value:g}")
+    return value
 
 
 def _id_set(name: str) -> frozenset[int]:
@@ -123,7 +131,7 @@ class Config:
             enable_presence_tracking=_bool("ENABLE_PRESENCE_TRACKING", False),
             tracked_activity_types=_activity_types("TRACKED_ACTIVITY_TYPES"),
             presence_flush_interval=_int("PRESENCE_FLUSH_INTERVAL", 60, minimum=5),
-            combined_voice_weight=_float("COMBINED_VOICE_WEIGHT", 1.0),
-            combined_message_weight=_float("COMBINED_MESSAGE_WEIGHT", 2.0),
+            combined_voice_weight=_float("COMBINED_VOICE_WEIGHT", 1.0, minimum=0.0),
+            combined_message_weight=_float("COMBINED_MESSAGE_WEIGHT", 2.0, minimum=0.0),
             raw_retention_days=_int("RAW_RETENTION_DAYS", 90, minimum=0),
         )
