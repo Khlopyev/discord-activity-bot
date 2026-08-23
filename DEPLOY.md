@@ -97,7 +97,17 @@ PS> scp -r discord-acb\bot discord-acb\tools discord-acb\assets discord-acb\test
 
 ```
 PS> cd C:\Projects\discord-acb
-PS> scp Dockerfile docker-compose.yml requirements.txt requirements-dev.txt pytest.ini README.md DEPLOY.md .gitignore bot@ВАШ_IP:~/discord-acb/
+PS> scp Dockerfile docker-compose.yml deploy.sh requirements.txt requirements-dev.txt pytest.ini README.md DEPLOY.md .env.example .gitignore bot@ВАШ_IP:~/discord-acb/
+```
+
+Два файла в этом списке легко проглядеть, а без них дальше ничего не работает:
+из `.env.example` на следующем шаге делается `.env`, а `deploy.sh` — это то, что
+запускает автовыкат из раздела 8.
+
+`scp` не переносит бит запуска, так что на сервере его нужно вернуть:
+
+```
+chmod +x ~/discord-acb/deploy.sh
 ```
 
 ### Перенесите накопленную статистику
@@ -170,7 +180,12 @@ unless-stopped` в `docker-compose.yml` поднимет контейнер са
 
 ### Обновление кода
 
-Скопируйте изменённые файлы с компьютера и пересоберите:
+Руками копировать файлы не нужно — для этого есть
+[раздел 8](#8-авторазвертывание): `deploy-local.ps1` с вашей машины или выкат
+по push. Оба варианта сами пересобирают контейнер и проверяют, что бот
+поднялся.
+
+Если всё же скопировали файлы вручную, пересобрать нужно так:
 
 ```
 docker compose up -d --build
@@ -301,7 +316,8 @@ PS> gh secret set DEPLOY_PATH
 PS> git push
 ```
 
-GitHub прогонит 108 тестов и, если они зелёные, зайдёт по SSH и выполнит
+GitHub прогонит тесты на Python 3.12, 3.13 и 3.14 и, если зелены все три
+версии, зайдёт по SSH и выполнит
 `deploy.sh`. Ручной перевыкат без коммита — вкладка Actions → «Развёртывание» →
 Run workflow.
 
@@ -309,7 +325,7 @@ Run workflow.
 
 Один и тот же скрипт используют оба варианта: подтягивает код (если каталог под
 git), пересобирает контейнер, чистит старые образы и ждёт, пока в логах появится
-`Вошли как`. Если за минуту бот не вошёл — скрипт завершается с ошибкой и
+`Вошли как`. Если за две минуты бот не вошёл — скрипт завершается с ошибкой и
 печатает логи, чтобы неудачный выкат не выглядел успешным.
 
 Ни один из вариантов не трогает `.env` и `data/` — токен и статистика остаются
