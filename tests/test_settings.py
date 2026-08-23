@@ -6,7 +6,10 @@ from zoneinfo import ZoneInfo
 import pytest
 import pytest_asyncio
 
+from bot.config import Config
 from bot.db import Database
+from bot.filters import is_tracked_channel
+from bot.main import ActivityBot
 from bot.settings import EXCLUDED_CHANNELS, SUMMARY_CHANNEL, SettingsStore
 
 UTC = ZoneInfo("UTC")
@@ -159,3 +162,75 @@ async def test_export_rows_scoped_to_guild(store):
 async def test_export_rejects_unknown_table(store):
     with pytest.raises(ValueError, match="не разрешена"):
         await store.db.export_rows(GUILD, "users; DROP TABLE users")
+
+
+# --- прогрев кэша для сервера, на который бота пригласили заново ---
+
+
+def make_config(database_path: str, **overrides) -> Config:
+    from dataclasses import fields
+
+    values = dict(
+        token="x", command_prefix="!", database_path=database_path, timezone=UTC,
+        timezone_name="UTC", excluded_channel_ids=frozenset(), exclude_afk_channel=True,
+        min_session_seconds=10, voice_flush_interval=60, message_flush_interval=30,
+        leaderboard_cache_ttl=60, track_char_count=True, enable_slash_commands=False,
+        enable_presence_tracking=False, tracked_activity_types=frozenset({"playing"}),
+        presence_flush_interval=60, combined_voice_weight=1.0,
+        combined_message_weight=2.0, raw_retention_days=90,
+    )
+    assert set(values) == {f.name for f in fields(Config)}
+    values.update(overrides)
+    return Config(**values)
+
+
+class RejoinedGuild:
+    """Сервер, на котором бот уже был: исключения лежат в базе."""
+
+    def __init__(self) -> None:
+        self.id = GUILD
+        self.name = "test"
+        self.afk_channel = None
+
+
+class ExcludedChannel:
+    def __init__(self, guild) -> None:
+        self.id = 100
+        self.guild = guild
+
+
+@pytest.mark.asyncio
+async def test_rejoining_a_guild_restores_its_exclusions(tmp_path):
+    """Приглашение бота заново не должно возвращать в трекинг исключённый канал.
+
+    Настройки прогреваются на on_ready по списку уже известных серверов.
+    Сервер, появившийся позже, в этот список не попадал: в базе исключения
+    лежали, а excluded_channels() отдавал пустоту — и канал считался снова.
+    """
+    path = str(tmp_path / "rejoin.db")
+
+    # Первый заход бота: админ исключает канал.
+    db = Database(path, UTC)
+    await db.connect()
+    await db.upsert_guild(GUILD, "test")
+    settings = SettingsStore(db)
+    await settings.load()
+    await settings.prime([GUILD])
+    await settings.exclude_channel(GUILD, 100)
+    await db.close()
+
+    # Бота удалили и пригласили заново: на on_ready сервера ещё нет.
+    bot = ActivityBot(make_config(path))
+    await bot.db.connect()
+    await bot.settings.load()
+    await bot.settings.prime([])
+
+    guild = RejoinedGuild()
+    channel = ExcludedChannel(guild)
+    await bot.on_guild_join(guild)
+
+    try:
+        assert set(bot.settings.excluded_channels(GUILD)) == {100}
+        assert is_tracked_channel(channel, bot.config, bot.settings) is False
+    finally:
+        await bot.db.close()

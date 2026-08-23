@@ -49,6 +49,11 @@ class TextTracker(commands.Cog):
             return
         if message.type not in (discord.MessageType.default, discord.MessageType.reply):
             return
+        # Исключения читаются синхронно и до первой загрузки выглядят пустыми.
+        # Сообщения, в отличие от голоса, не ждут синхронизации после старта,
+        # поэтому в первые мгновения работы бота исключённый канал успевал
+        # посчитаться. После первого обращения это просто попадание в словарь.
+        await self.settings.get(message.guild.id)
         if not is_tracked_channel(message.channel, self.config, self.settings):
             return
         # Команды самого бота не считаем активностью.

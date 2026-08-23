@@ -126,6 +126,11 @@ class ActivityBot(commands.Bot):
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         await self.db.upsert_guild(guild.id, guild.name)
+        # Настройки гильдии прогреваются только на on_ready, по списку уже
+        # известных серверов. Без этой строки бот, приглашённый заново на
+        # сервер, где раньше был, до следующего реконнекта считает каналы,
+        # которые админ исключил: в базе исключения лежат, а в кэше пусто.
+        await self.settings.prime([guild.id])
         if self.config.enable_slash_commands:
             await self.sync_commands()
 
