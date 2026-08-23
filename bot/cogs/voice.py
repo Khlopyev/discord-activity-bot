@@ -98,6 +98,29 @@ class VoiceTracker(commands.Cog):
                 )
                 await self.db.upsert_users([(member.id, str(member), False)])
 
+    async def resync_guild(self, guild: discord.Guild) -> None:
+        """Пересобрать открытые сессии гильдии под текущие исключения.
+
+        Нужно после /admin exclude-channel и /admin include-channel: flush()
+        перебирает уже открытые сессии и канал у них не перепроверяет. Без
+        пересборки исключённый канал продолжал бы капать время тем, кто в нём
+        сидит, — вопреки обещанию «учёт останавливается с этого момента» в
+        ответе самой команды.
+
+        Логика не дублируется: apply_state сам закроет сессию, если канал
+        больше не трекается, и откроет, если снова стал.
+        """
+        if not self._reconciled:
+            return
+        for channel in (*guild.voice_channels, *guild.stage_channels):
+            for member in list(channel.members):
+                state = (
+                    member.voice
+                    if is_tracked_user(guild.id, member, self.settings)
+                    else None
+                )
+                await self.apply_state(member, state)
+
     # --- синхронизация состояния после старта/реконнекта ---
 
     async def reconcile(self) -> None:

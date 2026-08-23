@@ -77,6 +77,12 @@ class Admin(commands.Cog):
             ephemeral=True,
         )
 
+    async def _resync_voice(self, guild: discord.Guild) -> None:
+        """Привести открытые голосовые сессии в соответствие с исключениями."""
+        voice = self.bot.get_cog("VoiceTracker")
+        if voice is not None:
+            await voice.resync_guild(guild)
+
     async def _drop_open_sessions(self, member: discord.abc.User) -> None:
         voice = self.bot.get_cog("VoiceTracker")
         if voice is not None and isinstance(member, discord.Member):
@@ -105,6 +111,9 @@ class Admin(commands.Cog):
             return
         added = await self.settings.exclude_channel(interaction.guild.id, channel.id)
         if added:
+            # Тот, кто уже сидит в канале, иначе продолжит копить время:
+            # фоновое начисление канал у открытых сессий не перепроверяет.
+            await self._resync_voice(interaction.guild)
             await interaction.response.send_message(
                 f"{channel.mention} исключён из трекинга. Уже накопленная по нему "
                 "статистика сохраняется — учёт останавливается с этого момента.",
@@ -125,6 +134,10 @@ class Admin(commands.Cog):
         if not await self._ensure_admin(interaction):
             return
         removed = await self.settings.include_channel(interaction.guild.id, channel.id)
+        if removed:
+            # Симметрично: тем, кто уже в канале, учёт должен начаться сразу,
+            # а не со следующего их захода.
+            await self._resync_voice(interaction.guild)
         message = (
             f"{channel.mention} снова учитывается."
             if removed
