@@ -105,21 +105,42 @@ class TextTracker(commands.Cog):
 
         try:
             await self.db.add_message_counts(rows, heat)
-            await self.db.upsert_users(users)
         except Exception:
             log.exception("Не удалось записать счётчики сообщений, возвращаю в буфер")
-            async with self._lock:
-                for guild_id, user_id, channel_id, date, count, chars in rows:
-                    key = (guild_id, user_id, channel_id, date)
-                    entry = self._buffer.get(key)
-                    if entry is None:
-                        self._buffer[key] = [count, chars]
-                    else:
-                        entry[0] += count
-                        entry[1] += chars
-                for gid, uid, weekday, hour, count in heat:
-                    heat_key = (gid, uid, weekday, hour)
-                    self._heat[heat_key] = self._heat.get(heat_key, 0) + count
+            await self._return_to_buffer(rows, heat, users)
+            return
+
+        # Отдельно от счётчиков и намеренно: они уже записаны, и вернуть их в
+        # буфер из-за неудачи здесь значило бы посчитать их второй раз.
+        # Устаревшее имя переживается легко, задвоенная статистика — нет.
+        try:
+            await self.db.upsert_users(users)
+        except Exception:
+            log.exception("Не удалось обновить имена участников, счётчики записаны")
+
+    async def _return_to_buffer(
+        self,
+        rows: list[tuple[int, int, int, str, int, int]],
+        heat: list[tuple[int, int, int, int, int]],
+        users: list[tuple[int, str | None, bool]],
+    ) -> None:
+        """Вернуть несохранённое в буфер, досыпав к тому, что успело накопиться."""
+        async with self._lock:
+            for guild_id, user_id, channel_id, date, count, chars in rows:
+                key = (guild_id, user_id, channel_id, date)
+                entry = self._buffer.get(key)
+                if entry is None:
+                    self._buffer[key] = [count, chars]
+                else:
+                    entry[0] += count
+                    entry[1] += chars
+            for gid, uid, weekday, hour, count in heat:
+                heat_key = (gid, uid, weekday, hour)
+                self._heat[heat_key] = self._heat.get(heat_key, 0) + count
+            for uid, name, _is_bot in users:
+                # Имена тоже возвращаются: раньше они молча терялись, и до
+                # следующего сообщения участник оставался со старым ником.
+                self._users.setdefault(uid, name)
 
     async def shutdown(self) -> None:
         self.flush_loop.cancel()
