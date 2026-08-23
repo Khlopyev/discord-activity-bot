@@ -1,4 +1,8 @@
-FROM python:3.12-slim
+# Дайджест, а не только тег: тег 3.12-slim переезжает на новый патч-релиз
+# Python и свежие системные пакеты, и пересборка через полгода собрала бы уже
+# другой образ. Здесь это Python 3.12.14 на Debian trixie от 2026-08-16.
+# Обновление приезжает отдельным PR от Dependabot (.github/dependabot.yml).
+FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

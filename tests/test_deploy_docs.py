@@ -1,4 +1,6 @@
-"""Список файлов для переноса на сервер живёт в двух местах.
+"""Сходимость артефактов выката: инструкция, скрипт, Dockerfile.
+
+Список файлов для переноса на сервер живёт в двух местах.
 
 DEPLOY.md диктует его человеку, scripts/deploy-local.ps1 — машине. Разойтись
 им нельзя: пропущенный в инструкции файл человек не заметит, пока выкат не
@@ -16,6 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 DEPLOY_MD = (ROOT / "DEPLOY.md").read_text(encoding="utf-8")
 DEPLOY_PS1 = (ROOT / "scripts" / "deploy-local.ps1").read_text(encoding="utf-8")
+DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
 SERVER = "bot@ВАШ_IP"
 
@@ -65,3 +68,26 @@ def test_deploy_script_is_shipped():
     """Без deploy.sh на сервере не работает ни один из вариантов выката."""
     assert "deploy.sh" in _doc_files()
     assert "deploy.sh" in _script_list("files")
+
+
+def test_base_image_is_pinned_by_digest():
+    """Тег 3.12-slim переезжает; без дайджеста пересборка даёт другой образ."""
+    from_line = re.search(r"^FROM (\S+)", DOCKERFILE, re.MULTILINE)
+    assert from_line, "в Dockerfile не нашлась строка FROM"
+    image = from_line.group(1)
+    assert re.search(r"@sha256:[0-9a-f]{64}$", image), (
+        f"базовый образ не прибит дайджестом: {image}"
+    )
+
+
+def test_base_image_keeps_readable_tag():
+    """Дайджест нечитаем: тег рядом с ним оставлен как подпись, что это за образ."""
+    from_line = re.search(r"^FROM (\S+)", DOCKERFILE, re.MULTILINE)
+    assert "python:3.12-slim@" in from_line.group(1)
+
+
+def test_pinned_image_has_dependabot_watching_it():
+    """Пин без автообновления — это замороженные security-патчи Debian."""
+    config = ROOT / ".github" / "dependabot.yml"
+    assert config.exists(), "базовый образ прибит, но обновлять его некому"
+    assert "package-ecosystem: docker" in config.read_text(encoding="utf-8")

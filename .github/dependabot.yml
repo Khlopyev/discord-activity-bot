@@ -1,0 +1,18 @@
+version: 2
+
+# Пин базового образа по дайджесту (Dockerfile) замораживает и security-патчи
+# Debian вместе с ним. Чтобы пин не превратился в тихо гниющий образ,
+# обновления приходят разбором раз в месяц — отдельным PR, который проходит
+# те же тесты, что и любой другой.
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+
+  # Node 20 в actions/checkout@v4 пришлось ловить руками по предупреждению
+  # раннера. Такие вещи должны приезжать сами.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
