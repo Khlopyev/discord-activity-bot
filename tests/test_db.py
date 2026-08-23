@@ -106,6 +106,43 @@ async def test_orphaned_session_credits_only_confirmed_time(db):
 
 
 @pytest.mark.asyncio
+async def test_short_orphaned_session_is_dropped_and_not_counted(db):
+    """Осиротевший огрызок короче порога удаляется — ради этого удаление и есть.
+
+    Возвращаемое число теперь считает только реально закрытые сессии. Раньше
+    огрызок сначала попадал в счётчик, а потом удалялся, и лог рапортовал
+    «закрыто осиротевших: 1» о сессии, от которой ничего не осталось.
+    """
+    await db.open_voice_session(
+        guild_id=GUILD, user_id=ALICE, channel_id=100, joined_at=dt(17, 10), is_stream=False
+    )
+    assert await db.close_orphaned_sessions(min_session_seconds=300) == 0
+    async with db.conn.execute("SELECT COUNT(*) AS n FROM voice_sessions") as cursor:
+        assert (await cursor.fetchone())["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_raising_min_session_keeps_already_credited_sessions(db):
+    """Поднятый порог не должен задним числом стирать начисленную историю.
+
+    Удаление коротких сессий шло по всей таблице, а не только по тем, что
+    закрыл сам вызов. После MIN_SESSION_SECONDS=10 -> 300 первый же перезапуск
+    выкашивал давно закрытые сессии, время которых уже лежит в агрегатах.
+    """
+    await voice(db, ALICE, dt(17, 10), dt(17, 10, 1))  # 60 секунд, начислена
+    weights = {"voice_weight": 1.0, "message_weight": 1.0}
+    before = (await db.user_totals(GUILD, ALICE, **weights)).voice_seconds
+
+    # Перезапуск бота с поднятым порогом, осиротевших сессий нет.
+    assert await db.close_orphaned_sessions(min_session_seconds=300) == 0
+
+    async with db.conn.execute("SELECT COUNT(*) AS n FROM voice_sessions") as cursor:
+        assert (await cursor.fetchone())["n"] == 1, "сырая сессия исчезла"
+    after = (await db.user_totals(GUILD, ALICE, **weights)).voice_seconds
+    assert after == before
+
+
+@pytest.mark.asyncio
 async def test_message_counts_aggregate_per_channel_and_summary(db):
     await db.add_message_counts(
         [
@@ -165,6 +202,26 @@ async def test_user_rank(db):
     assert await db.user_rank(GUILD, ALICE, **weights) == (1, 2)
     assert await db.user_rank(GUILD, BOB, **weights) == (2, 2)
     assert await db.user_rank(GUILD, 12345, **weights) is None
+
+
+@pytest.mark.asyncio
+async def test_rank_with_equal_scores_matches_leaderboard_order(db):
+    """При равных очках место обязано совпадать с позицией в лидерборде.
+
+    Раньше место считалось как «сколько людей строго выше», и двое с
+    одинаковым счётом оба получали первое — вместе с золотым бейджем на
+    карточке, — хотя в самом лидерборде стояли друг за другом.
+    """
+    await voice(db, ALICE, dt(17, 10), dt(17, 11))
+    await voice(db, BOB, dt(17, 12), dt(17, 13))  # ровно столько же секунд
+    weights = {"voice_weight": 1.0, "message_weight": 1.0}
+
+    board = await db.leaderboard(GUILD, "combined", limit=10, **weights)
+    assert len({row.combined_score for row in board}) == 1, "очки должны совпасть"
+    order = [row.user_id for row in board]
+
+    ranks = {uid: (await db.user_rank(GUILD, uid, **weights))[0] for uid in order}
+    assert [ranks[uid] for uid in order] == [1, 2]
 
 
 @pytest.mark.asyncio

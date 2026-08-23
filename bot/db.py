@@ -436,6 +436,21 @@ class Database:
         `credited_until`, то есть последним подтверждённым начислением.
         """
         async with self._lock:
+            # Сначала удаляем короткие — но только среди осиротевших. Раньше
+            # удаление шло по всей таблице после закрытия, и поднятый
+            # MIN_SESSION_SECONDS выкашивал давно закрытые сессии, время
+            # которых уже лежит в агрегатах: сырые данные и агрегат
+            # расходились молча.
+            await self.conn.execute(
+                """
+                DELETE FROM voice_sessions
+                WHERE is_open = 1
+                  AND CAST(
+                      (julianday(credited_until) - julianday(joined_at)) * 86400 AS INTEGER
+                  ) < ?
+                """,
+                (min_session_seconds,),
+            )
             cursor = await self.conn.execute(
                 """
                 UPDATE voice_sessions
@@ -448,10 +463,6 @@ class Database:
                 """
             )
             closed = cursor.rowcount or 0
-            await self.conn.execute(
-                "DELETE FROM voice_sessions WHERE is_open = 0 AND duration_seconds < ?",
-                (min_session_seconds,),
-            )
             await self.conn.commit()
         return closed
 
@@ -551,6 +562,18 @@ class Database:
 
     async def close_orphaned_presence_sessions(self, *, min_session_seconds: int) -> int:
         async with self._lock:
+            # Тот же порядок, что и для голосовых сессий: короткие удаляются
+            # только среди осиротевших, чтобы не задеть уже начисленные.
+            await self.conn.execute(
+                """
+                DELETE FROM presence_sessions
+                WHERE is_open = 1
+                  AND CAST(
+                      (julianday(credited_until) - julianday(started_at)) * 86400 AS INTEGER
+                  ) < ?
+                """,
+                (min_session_seconds,),
+            )
             cursor = await self.conn.execute(
                 """
                 UPDATE presence_sessions
@@ -563,10 +586,6 @@ class Database:
                 """
             )
             closed = cursor.rowcount or 0
-            await self.conn.execute(
-                "DELETE FROM presence_sessions WHERE is_open = 0 AND duration_seconds < ?",
-                (min_session_seconds,),
-            )
             await self.conn.commit()
         return closed
 
@@ -760,7 +779,13 @@ class Database:
         message_weight: float,
         since: str | None = None,
     ) -> tuple[int, int] | None:
-        """Место пользователя по combined_score и общее число участников в рейтинге."""
+        """Место пользователя по combined_score и общее число участников в рейтинге.
+
+        Порядок тот же, что в `leaderboard`: очки по убыванию, при равенстве —
+        меньший user_id выше. Иначе двое с одинаковым счётом видели бы у себя
+        одно и то же место (и одинаковый бейдж на карточке), а в самом
+        лидерборде стояли бы друг за другом.
+        """
         clause, extra = _period_clause(since)
         async with self.conn.execute(
             f"""
@@ -774,11 +799,14 @@ class Database:
                 HAVING score > 0
             )
             SELECT (SELECT COUNT(*) FROM scores) AS total,
-                   (SELECT COUNT(*) + 1 FROM scores
-                     WHERE score > (SELECT score FROM scores WHERE user_id = ?)) AS rank
+                   (SELECT COUNT(*) + 1
+                      FROM scores AS other
+                      CROSS JOIN (SELECT score FROM scores WHERE user_id = ?) AS me
+                     WHERE other.score > me.score
+                        OR (other.score = me.score AND other.user_id < ?)) AS rank
             WHERE EXISTS (SELECT 1 FROM scores WHERE user_id = ?)
             """,
-            (voice_weight, message_weight, guild_id, *extra, user_id, user_id),
+            (voice_weight, message_weight, guild_id, *extra, user_id, user_id, user_id),
         ) as cursor:
             row = await cursor.fetchone()
         if row is None:
