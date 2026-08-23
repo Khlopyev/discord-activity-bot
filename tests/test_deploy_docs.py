@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEPLOY_MD = (ROOT / "DEPLOY.md").read_text(encoding="utf-8")
 DEPLOY_PS1 = (ROOT / "scripts" / "deploy-local.ps1").read_text(encoding="utf-8")
 DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+DEPLOY_SH = (ROOT / "deploy.sh").read_text(encoding="utf-8")
 
 SERVER = "bot@ВАШ_IP"
 
@@ -91,3 +92,40 @@ def test_pinned_image_has_dependabot_watching_it():
     config = ROOT / ".github" / "dependabot.yml"
     assert config.exists(), "базовый образ прибит, но обновлять его некому"
     assert "package-ecosystem: docker" in config.read_text(encoding="utf-8")
+
+
+def _wait_budget_seconds() -> int:
+    """Сколько deploy.sh на самом деле ждёт входа бота в Discord."""
+    attempts = re.search(r"^WAIT_ATTEMPTS=(\d+)", DEPLOY_SH, re.MULTILINE)
+    step = re.search(r"^WAIT_STEP=(\d+)", DEPLOY_SH, re.MULTILINE)
+    assert attempts and step, "в deploy.sh не нашлись параметры ожидания"
+    return int(attempts.group(1)) * int(step.group(1))
+
+
+def test_documented_wait_matches_the_script():
+    """Ровно то расхождение, с которого начинался разбор DEPLOY.md.
+
+    В инструкции стояла минута, скрипт ждал две. Теперь число берётся из
+    самого скрипта, и разойтись им можно только вместе с этим тестом.
+    """
+    documented = re.search(r"Если за (\d+) минут", DEPLOY_MD)
+    assert documented, "в DEPLOY.md не нашлось обещание про время ожидания"
+    assert int(documented.group(1)) * 60 == _wait_budget_seconds()
+
+
+def test_wait_is_long_enough_for_the_first_index_build():
+    """Первый запуск после обновления схемы достраивает индексы до входа в Discord.
+
+    На базе в пару гигабайт это десятки секунд, на диске VPS — больше.
+    Двух минут, которые стояли раньше, на это может не хватить, и выкат
+    отчитался бы об ошибке при живом боте.
+    """
+    assert _wait_budget_seconds() >= 300
+
+
+def test_error_message_does_not_hardcode_the_number():
+    """Иначе оно снова разъедется с параметрами при первой же правке."""
+    error_line = next(
+        line for line in DEPLOY_SH.splitlines() if line.startswith("echo \"ОШИБКА:")
+    )
+    assert "WAIT_ATTEMPTS" in error_line and "WAIT_STEP" in error_line
