@@ -112,6 +112,26 @@ class StatsService:
             self._cache[key] = (now + self.config.leaderboard_cache_ttl, value)
         return value
 
+    def invalidate(self, guild_id: int) -> None:
+        """Забыть всё, что закэшировано по гильдии.
+
+        Вызывается после удаления данных. Само по себе устаревание по TTL для
+        этого не годится: после `/optout` человек получает ответ, что его
+        история удалена, и всё это время продолжает висеть в лидерборде —
+        ровно то, от чего он отказался.
+
+        Ключи кэша строятся как (вид, guild_id, ...), поэтому гильдия
+        определяется вторым элементом.
+        """
+        now = time.monotonic()
+        self._cache = {
+            key: entry
+            for key, entry in self._cache.items()
+            # Заодно выбрасываем протухшее: раньше записи оставались в словаре
+            # навсегда, TTL лишь помечал их негодными при чтении.
+            if key[1] != guild_id and entry[0] > now
+        }
+
     def _footer(self, period: str, *, with_formula: bool) -> str:
         base = f"{PERIOD_TITLES[period].capitalize()} · сутки по {self.config.timezone_name}"
         if with_formula:

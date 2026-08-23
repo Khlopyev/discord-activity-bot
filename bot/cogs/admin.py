@@ -32,6 +32,7 @@ class Admin(commands.Cog):
         self.bot = bot
         self.db = bot.db
         self.settings = bot.settings
+        self.stats = bot.stats
 
     # --- приватность, доступно всем ---
 
@@ -48,6 +49,9 @@ class Admin(commands.Cog):
         # Закрываем то, что уже открыто, иначе фоновая задача досчитает время.
         await self._drop_open_sessions(interaction.user)
         removed = await self.db.purge_user(guild_id, user_id)
+        # Иначе лидерборд ещё LEADERBOARD_CACHE_TTL секунд показывает того,
+        # кому только что ответили, что его данные удалены.
+        self.stats.invalidate(guild_id)
 
         await interaction.followup.send(
             "Готово. Сбор данных о вас на этом сервере остановлен, "
@@ -181,6 +185,8 @@ class Admin(commands.Cog):
                 cog = self.bot.get_cog(cog_name)
                 if cog is not None:
                     await cog.reconcile()
+
+        self.stats.invalidate(interaction.guild.id)
 
         await interaction.followup.send(
             f"Статистика сброшена ({target}). Удалено записей: {removed}.", ephemeral=True
