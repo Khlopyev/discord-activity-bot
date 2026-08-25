@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import timedelta
 from io import BytesIO
@@ -58,6 +59,26 @@ EMPTY_HINT = "Данных пока нет — статистика копитс
 
 # Раздел 3.3 брифа прямо требует обозначать неполноту presence-данных в интерфейсе.
 PRESENCE_CAVEAT = "у скрывших активность в настройках приватности игры не видны"
+
+
+# Название игры приходит из Rich Presence, то есть его задаёт произвольное
+# стороннее приложение, и длина ничем не ограничена. Discord отклоняет эмбед
+# целиком, если описание длиннее 4096 символов или поле длиннее 1024, так что
+# одна игра с длинным названием ломала и /games, и автосводку.
+#
+# Предел выбран с запасом: escape_markdown в худшем случае удваивает длину,
+# и 25 строк по (2 * 50 + служебные) укладываются в лимит описания.
+MAX_GAME_NAME = 50
+
+_WHITESPACE = re.compile(r"\s+")
+
+
+def game_label(name: str) -> str:
+    """Привести название игры к виду, пригодному для строки эмбеда."""
+    label = _WHITESPACE.sub(" ", name).strip()
+    if len(label) > MAX_GAME_NAME:
+        label = label[: MAX_GAME_NAME - 1].rstrip() + "…"
+    return label
 
 
 class UnknownArgument(ValueError):
@@ -372,7 +393,7 @@ class StatsService:
         lines = []
         for index, row in enumerate(rows, start=1):
             prefix = MEDALS[index - 1] if index <= len(MEDALS) else f"`{index:>2}.`"
-            name = discord.utils.escape_markdown(row.name)
+            name = discord.utils.escape_markdown(game_label(row.name))
             lines.append(
                 f"{prefix} **{name}** — {format_duration(row.seconds)}"
                 f" · игроков: {row.players}"

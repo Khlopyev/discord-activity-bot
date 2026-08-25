@@ -24,6 +24,7 @@ from ..settings import (
     SUMMARY_MONTHLY,
     SUMMARY_WEEKLY,
 )
+from ..stats import game_label
 from ..timeutil import ISO_DATE, format_duration, local_date, utcnow
 
 log = logging.getLogger(__name__)
@@ -154,7 +155,9 @@ class Summaries(commands.Cog):
                 embed.add_field(
                     name="Во что играли",
                     value="\n".join(
-                        f"**{game.name}** — {format_duration(game.seconds)}" for game in games
+                        f"**{discord.utils.escape_markdown(game_label(game.name))}**"
+                        f" — {format_duration(game.seconds)}"
+                        for game in games
                     ),
                     inline=False,
                 )
