@@ -121,9 +121,30 @@ class _JsonExport:
         return self._buffer.getvalue()
 
 
+# Ячейка, начинающаяся с одного из этих символов, исполняется Excel и
+# LibreOffice как формула, а не читается как текст (CWE-1236). Название игры
+# приходит из Rich Presence, то есть его задаёт произвольное стороннее
+# приложение, и попадает в выгрузку как есть. Кавычки CSV тут не помогают:
+# ="..." внутри кавычек Excel всё равно разбирает как формулу.
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: object) -> object:
+    """Обезвредить ячейку, которую Excel принял бы за формулу.
+
+    Одинарная кавычка в начале — принятый способ сказать Excel «это текст».
+    Обычные значения не трогаются.
+    """
+    if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def _to_csv(rows) -> str:
     text = io.StringIO()
-    csv.writer(text, lineterminator="\n").writerows(rows)
+    csv.writer(text, lineterminator="\n").writerows(
+        [_csv_safe(value) for value in row] for row in rows
+    )
     return text.getvalue()
 
 

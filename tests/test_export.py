@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import zipfile
@@ -147,3 +148,64 @@ async def test_export_stops_as_soon_as_it_outgrows_the_limit(db, cog, monkeypatc
     with pytest.raises(ExportTooLarge) as overflow:
         await cog._collect_export(GUILD, "json")
     assert overflow.value.rows > 0
+
+
+# --- формулы в выгрузке CSV ---
+
+
+async def add_game(db: Database, name: str) -> None:
+    session = await db.open_presence_session(
+        guild_id=GUILD, user_id=ALICE, activity_type="playing",
+        activity_name=name, started_at=datetime(2026, 8, 18, 10, tzinfo=timezone.utc),
+    )
+    await db.close_presence_session(
+        session, datetime(2026, 8, 18, 12, tzinfo=timezone.utc), min_session_seconds=10
+    )
+
+
+def game_cells(blob: bytes) -> list[str]:
+    """Ячейки единственной строки данных.
+
+    Разбираем весь файл через csv.reader, а не по строкам: значение с
+    возвратом каретки берётся в кавычки и занимает две физические строки.
+    """
+    with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+        text = archive.read("game_events_daily.csv").decode("utf-8-sig")
+    rows = [row for row in csv.reader(io.StringIO(text, newline="")) if row]
+    assert len(rows) == 2, f"ожидалась одна строка данных, получено {len(rows) - 1}"
+    return rows[1]
+
+
+@pytest.mark.parametrize("payload", ["=1+1", "+1-1", "-1+1", "@SUM(1)", "\tзло", "\rзло"])
+@pytest.mark.asyncio
+async def test_formula_cells_are_neutralised(db, cog, payload):
+    """Excel исполняет ячейку, начинающуюся с = + - @, как формулу (CWE-1236).
+
+    Название игры задаёт стороннее приложение через Rich Presence, а BOM в
+    архив кладётся именно ради Excel — то есть открывать выгрузку там и
+    собираются. Кавычки CSV не защищают: ="..." внутри кавычек Excel всё
+    равно разбирает как формулу.
+    """
+    await add_game(db, payload)
+    blob, _total = await cog._collect_export(GUILD, "csv")
+
+    assert game_cells(blob)[2] == "'" + payload
+
+
+@pytest.mark.asyncio
+async def test_ordinary_names_are_untouched(db, cog):
+    """Опора: обезвреживание не должно трогать нормальные названия."""
+    await add_game(db, "Dota 2")
+    blob, _total = await cog._collect_export(GUILD, "csv")
+
+    assert game_cells(blob)[2] == "Dota 2"
+
+
+@pytest.mark.asyncio
+async def test_json_export_keeps_the_value_exactly(db, cog):
+    """JSON никто не исполняет — там значение должно остаться нетронутым."""
+    await add_game(db, "=1+1")
+    blob, _total = await cog._collect_export(GUILD, "json")
+
+    parsed = json.loads(blob.decode("utf-8"))
+    assert parsed["game_events_daily"][0]["activity_name"] == "=1+1"
