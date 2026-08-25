@@ -178,3 +178,44 @@ def test_resolution_happens_once(tmp_path, monkeypatch):
     monkeypatch.setenv("FONT_REGULAR_PATH", fake_font(tmp_path, "second.ttf"))
     fonts._ensure_resolved()
     assert fonts._regular == first, "повторный резолв на горячем пути не нужен"
+
+
+# --- многострочный текст в данных карточки ---
+
+
+def test_single_line_collapses_whitespace():
+    # Локальный импорт: остальные тесты в этом блоке проверяют поведение
+    # рендера и должны собираться даже там, где этой функции ещё нет.
+    from bot.card import _single_line
+
+    assert _single_line("игра\nстрока") == "игра строка"
+    assert _single_line("игра\r\nстрока") == "игра строка"
+    assert _single_line("таб\tтут") == "таб тут"
+    assert _single_line("  много   пробелов  ") == "много пробелов"
+    assert _single_line("\n\n\n") == ""
+    assert _single_line("обычная строка") == "обычная строка"
+
+
+def test_newline_in_game_name_does_not_break_the_card():
+    """Главный случай: название игры задаёт стороннее приложение.
+
+    Rich Presence отдаёт произвольный текст, бот сохраняет его как есть, и
+    один перевод строки ронял весь рендер: Pillow не умеет измерять
+    многострочный текст и бросает ValueError из textlength.
+    """
+    card = make_card(top_game=("Игра\nвторая строка", 7200))
+    assert render(card).size == (WIDTH, HEIGHT)
+
+
+def test_newline_in_names_does_not_break_the_card():
+    for field, value in (
+        ("display_name", "ник\nстрока"),
+        ("guild_name", "сервер\nстрока"),
+        ("favourite_channel", "канал\nстрока"),
+    ):
+        assert render(make_card(**{field: value})).size == (WIDTH, HEIGHT), field
+
+
+def test_newline_in_chart_label_does_not_break_the_card():
+    series = [("1\n2", 5.0)] + [(str(i), float(i)) for i in range(2, CHART_DAYS + 1)]
+    assert render(make_card(series=series)).size == (WIDTH, HEIGHT)

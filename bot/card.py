@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -43,6 +44,8 @@ BAR_IDLE = (52, 56, 68)
 RANK_COLOURS = {1: (240, 178, 50), 2: (188, 192, 200), 3: (205, 127, 50)}
 
 CHART_DAYS = 14
+
+_WHITESPACE = re.compile(r"\s+")
 
 FONT_CANDIDATES_REGULAR = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -392,6 +395,18 @@ def _avatar_placeholder(size: int, display_name: str) -> Image.Image:
     return image
 
 
+def _single_line(text: str) -> str:
+    """Схлопнуть переводы строк и повторные пробелы в одну строку.
+
+    Pillow не умеет измерять многострочный текст: textlength бросает
+    ValueError, и карточка не рисуется вовсе. Название игры приходит из Rich
+    Presence, то есть его задаёт произвольное стороннее приложение, и одного
+    перевода строки там хватало, чтобы /profile перестал работать у всех, кто
+    в эту игру играл.
+    """
+    return _WHITESPACE.sub(" ", text).strip()
+
+
 def _centred_text(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -401,6 +416,7 @@ def _centred_text(
     top: float,
     fill: tuple[int, int, int],
 ) -> None:
+    text = _single_line(text)
     width = _text_width(draw, text, font)
     draw.text((left + (right - left - width) / 2, top), text, font=font, fill=fill)
 
@@ -413,6 +429,7 @@ def _fit_text(
     draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: float
 ) -> str:
     """Обрезать строку многоточием, чтобы длинный ник не уехал за край карточки."""
+    text = _single_line(text)
     if _text_width(draw, text, font) <= max_width:
         return text
     ellipsis = "…"
