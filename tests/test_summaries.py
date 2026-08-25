@@ -98,3 +98,75 @@ async def test_top_games_respects_upper_bound(db):
 
     games = await db.top_games(GUILD, since="2026-08-10", until="2026-08-16")
     assert [(g.name, g.seconds) for g in games] == [("Dota 2", 3600)]
+
+
+# --- длина поля с играми в автосводке ---
+
+EMBED_FIELD_LIMIT = 1024
+
+
+class FakeSummaryGuild:
+    def __init__(self) -> None:
+        self.id = GUILD
+        self.name = "Сервер"
+        self.icon = None
+
+    def get_member(self, user_id):
+        return None
+
+
+def make_config(**overrides):
+    from dataclasses import fields as dc_fields
+
+    from bot.config import Config
+
+    values = dict(
+        token="x", command_prefix="!", database_path=":memory:", timezone=UTC,
+        timezone_name="UTC", excluded_channel_ids=frozenset(), exclude_afk_channel=True,
+        min_session_seconds=10, voice_flush_interval=60, message_flush_interval=30,
+        leaderboard_cache_ttl=0, track_char_count=True, enable_slash_commands=True,
+        enable_presence_tracking=True, tracked_activity_types=frozenset({"playing"}),
+        presence_flush_interval=60, combined_voice_weight=1.0,
+        combined_message_weight=2.0, raw_retention_days=90,
+    )
+    assert set(values) == {f.name for f in dc_fields(Config)}
+    values.update(overrides)
+    return Config(**values)
+
+
+@pytest.mark.asyncio
+async def test_summary_game_field_stays_within_discord_limit(db):
+    """Автосводка уходит по расписанию, и её падения никто не увидит.
+
+    Поле эмбеда ограничено 1024 символами. Название игры приходит из Rich
+    Presence без ограничения длины, так что три длинных названия пробивали
+    лимит: Discord отказывал в отправке, маркер не обновлялся, и бот
+    пробовал заново каждые десять минут.
+    """
+    from bot.cogs.summaries import Summaries
+    from bot.stats import StatsService
+
+    config = make_config()
+    stats = StatsService(db, config)
+
+    cog = Summaries.__new__(Summaries)
+    cog.bot, cog.config, cog.db, cog.settings, cog.stats = None, config, db, None, stats
+
+    await db.upsert_users([(ALICE + i, f"player{i}", False) for i in range(3)])
+    for i in range(3):
+        session = await db.open_presence_session(
+            guild_id=GUILD, user_id=ALICE + i, activity_type="playing",
+            activity_name="*_~`|" * 100 + f" #{i}", started_at=dt(8, 18, 10),
+        )
+        await db.close_presence_session(session, dt(8, 18, 12), min_session_seconds=10)
+        voice = await db.open_voice_session(
+            guild_id=GUILD, user_id=ALICE + i, channel_id=1,
+            joined_at=dt(8, 18, 10), is_stream=False,
+        )
+        await db.close_session(voice, dt(8, 18, 12), min_session_seconds=10)
+
+    embed = await cog.build_summary(FakeSummaryGuild(), "недели", date(2026, 8, 17), date(2026, 8, 23))
+
+    games = next(field for field in embed.fields if field.name == "Во что играли")
+    assert len(games.value) <= EMBED_FIELD_LIMIT
+    assert len(games.value.splitlines()) == 3

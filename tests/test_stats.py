@@ -180,3 +180,67 @@ async def test_optout_clears_the_leaderboard_cache(db):
 
     after = await stats.leaderboard_embed(guild, "combined", "all", 10)
     assert "alice" not in after.description
+
+
+# --- длина названий игр в эмбедах ---
+
+# Документированные лимиты Discord.
+EMBED_DESCRIPTION_LIMIT = 4096
+EMBED_TOTAL_LIMIT = 6000
+
+
+def test_game_label_collapses_and_shortens():
+    from bot.stats import MAX_GAME_NAME, game_label
+
+    assert game_label("Dota 2") == "Dota 2"
+    assert game_label("  Dota\n2  ") == "Dota 2"
+    long_name = "И" * 300
+    assert len(game_label(long_name)) == MAX_GAME_NAME
+    assert game_label(long_name).endswith("…")
+
+
+async def add_games(db, count: int, name_factory) -> None:
+    await db.upsert_users([(200 + i, f"player{i}", False) for i in range(count)])
+    for i in range(count):
+        session = await db.open_presence_session(
+            guild_id=GUILD, user_id=200 + i, activity_type="playing",
+            activity_name=name_factory(i), started_at=dt(18, 10),
+        )
+        await db.close_presence_session(session, dt(18, 12), min_session_seconds=10)
+
+
+def embed_size(embed) -> int:
+    total = len(embed.title or "") + len(embed.description or "")
+    for field in embed.fields:
+        total += len(field.name or "") + len(field.value or "")
+    if embed.footer and embed.footer.text:
+        total += len(embed.footer.text)
+    return total
+
+
+@pytest.mark.asyncio
+async def test_games_embed_stays_within_discord_limits(db):
+    """Название игры задаёт стороннее приложение, и длина его ничем не ограничена.
+
+    Discord отклоняет эмбед целиком, если описание длиннее 4096 символов, так
+    что одна игра с длинным названием ломала всю команду. Худший случай —
+    спецсимволы Markdown: escape_markdown их удваивает.
+    """
+    stats = StatsService(db, make_config(enable_presence_tracking=True))
+    await add_games(db, 25, lambda i: "*_~`|" * 80 + f" #{i}")
+
+    embed = await stats.games_embed(FakeGuild(), "all", 25)
+
+    assert len(embed.description) <= EMBED_DESCRIPTION_LIMIT
+    assert embed_size(embed) <= EMBED_TOTAL_LIMIT
+    assert len(embed.description.splitlines()) == 25, "строки не должны потеряться"
+
+
+@pytest.mark.asyncio
+async def test_games_embed_keeps_ordinary_names_intact(db):
+    """Опора: обрезка не должна трогать нормальные названия."""
+    stats = StatsService(db, make_config(enable_presence_tracking=True))
+    await add_games(db, 1, lambda i: "Dota 2")
+
+    embed = await stats.games_embed(FakeGuild(), "all", 10)
+    assert "Dota 2" in embed.description
