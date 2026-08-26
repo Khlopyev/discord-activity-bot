@@ -16,7 +16,12 @@ import signal
 
 import pytest
 
-from bot.main import STOP_SIGNALS, install_stop_handlers, shutdown_trackers
+from bot.main import (
+    STOP_SIGNALS,
+    _serve,
+    install_stop_handlers,
+    shutdown_trackers,
+)
 
 
 class FakeLoop:
@@ -123,3 +128,55 @@ async def test_failing_cog_does_not_block_the_rest():
     })
     await shutdown_trackers(bot)
     assert calls == ["voice", "text"]
+
+
+# --- остановка должна доводиться до конца ---
+
+
+class SlowClosingBot:
+    """Заглушка с той же формой, что у настоящего бота.
+
+    start() возвращается сразу после закрытия вебсокета, а закрытие базы идёт
+    в той же задаче и уступает управление — как aiosqlite через поток.
+    """
+
+    def __init__(self) -> None:
+        self.closing = asyncio.Event()
+        self.database_closed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return None
+
+    async def start(self, token: str) -> None:
+        await self.closing.wait()
+
+    async def close(self) -> None:
+        self.closing.set()          # аналог super().close(): вебсокет закрыт
+        await asyncio.sleep(0.05)   # аналог db.close() через поток
+        self.database_closed = True
+
+
+def test_shutdown_finishes_before_the_loop_tears_down(monkeypatch):
+    """Остановка не должна обрываться на выходе из цикла событий.
+
+    bot.start() возвращается, как только закрыт вебсокет. Если не дождаться
+    задачи остановки, asyncio.run отменит её — и до закрытия базы дело не
+    дойдёт: SQLite останется с незачекпойнченным WAL, а PRAGMA optimize не
+    выполнится. Ровно это и случилось на сервере после первого выката.
+
+    Сигнал не шлём: подменяем установщик обработчиков, чтобы тест шёл и на
+    Windows, где SIGTERM не доставляется.
+    """
+
+    def fire_immediately(loop, on_stop):
+        loop.call_soon(on_stop)
+        return ["SIGTERM"]
+
+    monkeypatch.setattr("bot.main.install_stop_handlers", fire_immediately)
+
+    bot = SlowClosingBot()
+    asyncio.run(_serve(bot, "токен"))
+    assert bot.database_closed, "остановку оборвали до закрытия базы"

@@ -156,6 +156,9 @@ class ActivityBot(commands.Bot):
             await shutdown_trackers(self)
         await super().close()
         await self.db.close()
+        # Без этой строки штатная остановка выглядит в логах как обрыв: понять,
+        # дошло ли дело до закрытия базы, было не по чему.
+        log.info("Остановлено: буферы сброшены, база закрыта")
 
 
 async def shutdown_trackers(bot: commands.Bot) -> None:
@@ -221,8 +224,21 @@ async def _serve(bot: ActivityBot, token: str) -> None:
     не закрывались, а несброшенные счётчики сообщений терялись.
     """
     loop = asyncio.get_running_loop()
+    stopping: asyncio.Task | None = None
+
+    def request_stop() -> None:
+        nonlocal stopping
+        if stopping is None:
+            stopping = loop.create_task(bot.close())
+
     async with bot:
-        installed = install_stop_handlers(loop, lambda: loop.create_task(bot.close()))
+        installed = install_stop_handlers(loop, request_stop)
         if installed:
             log.info("Штатная остановка по: %s", ", ".join(installed))
         await bot.start(token)
+        if stopping is not None:
+            # bot.start() возвращается, как только закрыт вебсокет, а остановка
+            # на этом не заканчивается: в той же задаче ещё закрывается база.
+            # Без этого ожидания asyncio.run отменил бы её на выходе, и SQLite
+            # остался бы с незачекпойнченным WAL, а PRAGMA optimize не отработал.
+            await stopping
